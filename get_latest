@@ -4,17 +4,23 @@ require 'digest/sha2'
 require 'open-uri'
 require 'openssl'
 require 'securerandom'
+require 'net/http'
 require 'bundler/setup'
 Bundler.require
 
 CONFIG = {
   redis_url: 'redis://localhost:6379',
-  user_agent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_8_4) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/28.0.1500.71 Safari/537.36"
+  user_agent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_8_4) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/28.0.1500.71 Safari/537.36",
+  webhook_url: 'http://localhost:8080/hubot/message',
+  message_prefix: ''
 }
 CONFIG_MAP = {
   craigslist_url: 'CL_URL',
   redis_url: 'REDIS_URL',
-  user_agent: 'USER_AGENT'
+  user_agent: 'USER_AGENT',
+  message_recipient: 'MESSAGE_RECIPIENT',
+  message_prefix: 'MESSAGE_PREFIX',
+  webhook_url: 'WEBHOOK_URL'
 }
 CONFIG_MAP.each do |key, env_var|
   val = ENV[env_var] || CONFIG[key] or raise "You must supply a #{env_var} variable"
@@ -155,10 +161,26 @@ class IdentifierURI
   end
 end
 
-@search = Search.new CONFIG[:craigslist_url]
-
-@search.new_posts.each do |post|
-  puts "#{post[:title]} #{post[:location]}: #{post[:url]}"
+class WebhookPoster
+  def initialize(url)
+    @uri = URI(url)
+  end
+  def send(data)
+    Net::HTTP.post_form(@uri, data).body
+  end
 end
 
+@webhook = WebhookPoster.new(CONFIG[:webhook_url])
+@search = Search.new CONFIG[:craigslist_url]
+
+if @search.new_posts.length > 0
+  prefix = CONFIG[:message_prefix].to_s.empty? ? nil : CONFIG[:message_prefix].to_s
+  message = [prefix]
+  @search.new_posts.each do |post|
+    message << [post[:title], post[:location], post[:url]].compact.join(' ')
+  end
+  message = message.join("\n\n")
+  puts "Sending message to #{CONFIG[:message_recipient]}:\n#{message}"
+  @webhook.send user: CONFIG[:message_recipient], message: message
+end
 @search.persist_identifiers
