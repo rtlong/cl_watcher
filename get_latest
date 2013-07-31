@@ -51,10 +51,10 @@ class Search
     return @current_identifiers if @current_identifiers
     @current_identifiers = Redis::Set.new(SecureRandom.uuid).tap do |set|
       set.clear
-      set.expire(60)
       @search_page.post_ids.each do |id|
         set << id
       end
+      set.expire(60)
     end
   end
 
