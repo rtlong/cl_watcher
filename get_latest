@@ -1,0 +1,164 @@
+#!/usr/bin/env ruby
+
+require 'digest/sha2'
+require 'open-uri'
+require 'openssl'
+require 'securerandom'
+require 'bundler/setup'
+Bundler.require
+
+CONFIG = {
+  redis_url: 'redis://localhost:6379',
+  user_agent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_8_4) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/28.0.1500.71 Safari/537.36"
+}
+CONFIG_MAP = {
+  craigslist_url: 'CL_URL',
+  redis_url: 'REDIS_URL',
+  user_agent: 'USER_AGENT'
+}
+CONFIG_MAP.each do |key, env_var|
+  val = ENV[env_var] || CONFIG[key] or raise "You must supply a #{env_var} variable"
+  CONFIG[key] = val
+end
+REQ_OPTIONS = {
+  'User-Agent' => CONFIG[:user_agent],
+  ssl_verify_mode: OpenSSL::SSL::VERIFY_NONE,
+  # progress_proc: ->(*args) { putc ?. }
+}
+
+Redis.current = Redis.new(url: CONFIG[:redis_url])
+
+class Search
+  include Redis::Objects
+
+  # persist a simple collection of all the post identifiers that we've seen for this search
+  set :previous_identifiers
+
+  attr_reader :url, :id
+
+  def initialize(url)
+    @search_page = SearchPage.new(url)
+    @id = IdentifierURI.new(@search_page.url).hash
+  end
+
+  def current_identifiers
+    return @current_identifiers if @current_identifiers
+    @current_identifiers = Redis::Set.new(SecureRandom.uuid).tap do |set|
+      set.clear
+      set.expire(60)
+      @search_page.post_ids.each do |id|
+        set << id
+      end
+    end
+  end
+
+  def new_post_ids
+    current_identifiers - previous_identifiers
+  end
+
+  def new_posts
+    @search_page.posts.values_at(*new_post_ids)
+  end
+
+  def persist_identifiers
+    redis.sunionstore previous_identifiers.key, previous_identifiers.key, current_identifiers.key
+  end
+
+  # def current_identifiers
+  #   posts.map(&:hash)
+  # end
+
+  # def posts
+  #   @posts ||= @search_page.post_urls.map do |url|
+  #     Post.new(url)
+  #   end
+  # end
+end
+
+# class Post
+#   def initialize(url)
+#     @post_page = PostPage.new(url)
+#   end
+#   attr_reader :post_page
+
+#   def hash
+#     @post_page.body.hash
+#   end
+# end
+
+class Page
+  attr_accessor :url, :id
+
+  def initialize(url)
+    @url = URI(url)
+    @id = IdentifierURI.new(@url).hash
+  end
+
+  def page
+    @page ||= Nokogiri::HTML(@url.read(REQ_OPTIONS))
+  end
+end
+
+class SearchPage < Page
+  def posts
+    return @posts if @posts
+    @posts = {}
+    page.css('.row').each do |n|
+      link = n.css('.pl > a')
+      url = self.url.dup
+      url.path = link.attr('href').text
+      url.query = nil
+      id = n.attr('data-pid')
+      @posts[id] = {
+        url: url,
+        title: link.text,
+        id: id,
+        location: n.css('.l2 .pnr small').text
+      }.freeze
+    end
+    @posts
+  end
+
+  def post_ids
+    posts.keys
+  end
+end
+
+# class PostPage < Page
+#   def body
+#     page.css('#postingbody').text
+#   end
+# end
+
+class IdentifierURI
+  def self.parse(str)
+    new URI(str)
+  end
+
+  def initialize(uri)
+    @uri = uri.dup
+    @uri.scheme = 'http' # we don't want to care about this
+    @uri.query = normalize_query
+  end
+
+  def hash
+    Digest::SHA256.hexdigest @uri.to_s
+  end
+
+  protected
+
+  def normalize_query
+    return nil unless @uri.query
+    params = URI.decode(@uri.query).split(?&)
+    return nil unless params.length > 0
+    params.sort.grep(/\S+=\S+/).join(?&)
+  end
+end
+
+@search = Search.new CONFIG[:craigslist_url]
+
+@search.new_posts.each do |post|
+  puts "#{post[:title]} #{post[:location]}: #{post[:url]}"
+end
+
+@search.persist_identifiers

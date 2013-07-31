@@ -1,0 +1,17 @@
+GEM
+  remote: https://rubygems.org/
+  specs:
+    mini_portile (0.5.1)
+    nokogiri (1.6.0)
+      mini_portile (~> 0.5.0)
+    redis (3.0.4)
+    redis-objects (0.7.0)
+      redis (>= 3.0.2)
+
+PLATFORMS
+  ruby
+
+DEPENDENCIES
+  nokogiri
+  redis
+  redis-objects
